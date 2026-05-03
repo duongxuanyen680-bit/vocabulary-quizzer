@@ -2,12 +2,14 @@ import { db } from './db';
 
 type ExtractedWord = { english: string; chinese: string };
 type Submission = { word: string; targetChinese: string; userChinese: string };
+type ImageMode = 'object-url' | 'string-url';
 
 type ChatMessageContent =
   | string
   | Array<
       | { type: 'text'; text: string }
       | { type: 'image_url'; image_url: { url: string } }
+      | { type: 'image_url'; image_url: string }
       | { type: 'file'; file: { filename: string; file_data: string } }
     >;
 
@@ -39,7 +41,7 @@ async function getAiConfig() {
   return { endpoint, model, apiKey };
 }
 
-async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: string) {
+async function requestTextFromAi(content: ChatMessageContent, systemPrompt: string) {
   const { endpoint, model, apiKey } = await getAiConfig();
 
   const response = await fetch(endpoint, {
@@ -51,6 +53,7 @@ async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: stri
     body: JSON.stringify({
       model,
       temperature: 0,
+      max_tokens: 4096,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content },
@@ -70,7 +73,12 @@ async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: stri
     throw new Error('AI API returned an unsupported response format.');
   }
 
-  return parseJsonText(text);
+  return text;
+}
+
+async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: string) {
+  const rawText = await requestTextFromAi(content, systemPrompt);
+  return { rawText, result: parseJsonText(rawText) };
 }
 
 function parseJsonText(text: string) {
@@ -99,46 +107,150 @@ function parseJsonText(text: string) {
   throw new Error('AI API did not return valid JSON.');
 }
 
-export async function extractWordsFromDocuments(files: File[]): Promise<ExtractedWord[]> {
+function firstStringValue(item: any, keys: string[]) {
+  for (const key of keys) {
+    const value = item?.[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+function normalizeStringWord(item: string): ExtractedWord {
+  const text = item.trim();
+  const separator = [' - ', ' -- ', ': ', ' = ', ' | '].find(token => text.includes(token));
+  if (!separator) return { english: text, chinese: '' };
+
+  const [english, ...rest] = text.split(separator);
+  return {
+    english: english.trim(),
+    chinese: rest.join(separator).trim(),
+  };
+}
+
+function normalizeExtractedWord(item: any): ExtractedWord {
+  if (typeof item === 'string') {
+    return normalizeStringWord(item);
+  }
+
+  if (Array.isArray(item)) {
+    return {
+      english: String(item[0] || '').trim(),
+      chinese: String(item[1] || '').trim(),
+    };
+  }
+
+  return {
+    english: firstStringValue(item, [
+      'english',
+      'word',
+      'term',
+      'phrase',
+      'vocabulary',
+      'vocab',
+      'en',
+      'source',
+    ]),
+    chinese: firstStringValue(item, [
+      'chinese',
+      'meaning',
+      'translation',
+      'definition',
+      'chineseMeaning',
+      'cn',
+      'zh',
+      'target',
+    ]),
+  };
+}
+
+function extractWordsArray(result: any) {
+  if (Array.isArray(result)) return result;
+
+  for (const key of ['words', 'vocabulary', 'items', 'data', 'result', 'results']) {
+    if (Array.isArray(result?.[key])) {
+      return result[key];
+    }
+  }
+
+  return [];
+}
+
+function normalizeWords(result: any) {
+  return extractWordsArray(result)
+    .map(normalizeExtractedWord)
+    .filter((word: ExtractedWord) => word.english && word.chinese);
+}
+
+async function buildExtractionParts(files: File[], imageMode: ImageMode): Promise<Exclude<ChatMessageContent, string>> {
   const parts: Exclude<ChatMessageContent, string> = [
     {
       type: 'text',
       text:
-        'Extract all English words or phrases and their corresponding Chinese meanings from the attached documents. ' +
-        'Return only JSON in this exact shape: {"words":[{"english":"word","chinese":"Chinese meaning"}]}. ' +
-        'If a word has multiple meanings, provide the primary meaning or a concise combined meaning.',
+        'Read the attached image or document and extract every visible English vocabulary word or phrase. ' +
+        'For each item, provide a concise Chinese meaning. If the image contains only English words, infer the Chinese meanings yourself. ' +
+        'Return strict JSON only, with no markdown and no explanation. Use this exact shape: {"words":[{"english":"abandon","chinese":"give up"}]}. ' +
+        'The field names must be exactly "english" and "chinese". Do not return an empty list unless no English text is visible.',
     },
   ];
 
   for (const file of files) {
     const dataUrl = await fileToDataUrl(file);
     if (file.type.startsWith('image/')) {
-      parts.push({ type: 'image_url', image_url: { url: dataUrl } });
+      if (imageMode === 'string-url') {
+        parts.push({ type: 'image_url', image_url: dataUrl });
+      } else {
+        parts.push({ type: 'image_url', image_url: { url: dataUrl } });
+      }
     } else {
       parts.push({ type: 'file', file: { filename: file.name, file_data: dataUrl } });
     }
   }
 
-  const result = await requestJsonFromAi(
-    parts,
-    'You extract vocabulary from study materials and respond with strict JSON only.',
-  );
+  return parts;
+}
 
-  const words = Array.isArray(result) ? result : result?.words;
-  if (!Array.isArray(words)) return [];
+function truncateForMessage(text: string) {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  return cleaned.length > 280 ? `${cleaned.slice(0, 280)}...` : cleaned;
+}
 
-  return words
-    .map((item: any) => ({
-      english: String(item?.english || '').trim(),
-      chinese: String(item?.chinese || '').trim(),
-    }))
-    .filter((word: ExtractedWord) => word.english && word.chinese);
+export async function extractWordsFromDocuments(files: File[]): Promise<ExtractedWord[]> {
+  let lastRawText = '';
+  let lastError: unknown = null;
+
+  for (const imageMode of ['object-url', 'string-url'] as const) {
+    try {
+      const parts = await buildExtractionParts(files, imageMode);
+      const { rawText, result } = await requestJsonFromAi(
+        parts,
+        'You extract vocabulary from study materials and respond with strict JSON only.',
+      );
+
+      lastRawText = rawText;
+      const words = normalizeWords(result);
+      if (words.length > 0) return words;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastRawText) {
+    throw new Error(`AI returned no extractable words. Raw response: ${truncateForMessage(lastRawText)}`);
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+
+  return [];
 }
 
 export async function gradeAnswers(submissions: Submission[]): Promise<boolean[]> {
   if (submissions.length === 0) return [];
 
-  const result = await requestJsonFromAi(
+  const { result } = await requestJsonFromAi(
     JSON.stringify({
       instruction:
         'Grade each Chinese answer for the matching English word. Accept synonyms and minor typos. Mark false when the meaning is fundamentally wrong or blank. Return only JSON.',
