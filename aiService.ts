@@ -99,14 +99,69 @@ function parseJsonText(text: string) {
   throw new Error('AI API did not return valid JSON.');
 }
 
+function firstStringValue(item: any, keys: string[]) {
+  for (const key of keys) {
+    const value = item?.[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+function normalizeExtractedWord(item: any): ExtractedWord {
+  if (Array.isArray(item)) {
+    return {
+      english: String(item[0] || '').trim(),
+      chinese: String(item[1] || '').trim(),
+    };
+  }
+
+  return {
+    english: firstStringValue(item, [
+      'english',
+      'word',
+      'term',
+      'phrase',
+      'vocabulary',
+      'vocab',
+      'en',
+      'source',
+    ]),
+    chinese: firstStringValue(item, [
+      'chinese',
+      'meaning',
+      'translation',
+      'definition',
+      'chineseMeaning',
+      'cn',
+      'zh',
+      'target',
+    ]),
+  };
+}
+
+function extractWordsArray(result: any) {
+  if (Array.isArray(result)) return result;
+
+  for (const key of ['words', 'vocabulary', 'items', 'data', 'result', 'results']) {
+    if (Array.isArray(result?.[key])) {
+      return result[key];
+    }
+  }
+
+  return [];
+}
+
 export async function extractWordsFromDocuments(files: File[]): Promise<ExtractedWord[]> {
   const parts: Exclude<ChatMessageContent, string> = [
     {
       type: 'text',
       text:
-        'Extract all English words or phrases and their corresponding Chinese meanings from the attached documents. ' +
-        'Return only JSON in this exact shape: {"words":[{"english":"word","chinese":"Chinese meaning"}]}. ' +
-        'If a word has multiple meanings, provide the primary meaning or a concise combined meaning.',
+        'Read the attached image or document and extract every visible English vocabulary word or phrase. ' +
+        'For each item, provide a concise Chinese meaning. If the image contains only English words, infer the Chinese meanings yourself. ' +
+        'Return strict JSON only, with no markdown and no explanation. Use this exact shape: {"words":[{"english":"abandon","chinese":"放弃"}]}. ' +
+        'The field names must be exactly "english" and "chinese". Do not return an empty list unless no English text is visible.',
     },
   ];
 
@@ -124,14 +179,8 @@ export async function extractWordsFromDocuments(files: File[]): Promise<Extracte
     'You extract vocabulary from study materials and respond with strict JSON only.',
   );
 
-  const words = Array.isArray(result) ? result : result?.words;
-  if (!Array.isArray(words)) return [];
-
-  return words
-    .map((item: any) => ({
-      english: String(item?.english || '').trim(),
-      chinese: String(item?.chinese || '').trim(),
-    }))
+  return extractWordsArray(result)
+    .map(normalizeExtractedWord)
     .filter((word: ExtractedWord) => word.english && word.chinese);
 }
 
