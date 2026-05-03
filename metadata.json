@@ -1,0 +1,6 @@
+{
+  "name": "Vocabulary Quizzer",
+  "description": "An app to help you memorize words by automatically extracting them from PDFs and images, giving daily quizzes, and tracking spaced repetition using the Ebbinghaus forgetting curve.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
