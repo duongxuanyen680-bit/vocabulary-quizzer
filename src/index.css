@@ -1,0 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-natural-50: #fdfcf8;
+  --color-natural-100: #f9f8f4;
+  --color-natural-200: #f4f2e9;
+  --color-natural-300: #f0eee4;
+  --color-natural-400: #e8e4d8;
+  --color-natural-500: #d6d2c4;
+  --color-natural-600: #9a9c89;
+  --color-natural-700: #8a8c78;
+  --color-natural-800: #6d705c;
+  --color-natural-900: #5c5e4a;
+  --color-natural-950: #3a3b2f;
+  --color-natural-accent: #8c8c6d;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Lora", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 20px);
+  }
+}
+
+
