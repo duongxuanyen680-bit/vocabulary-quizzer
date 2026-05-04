@@ -54,6 +54,7 @@ async function requestTextFromAi(content: ChatMessageContent, systemPrompt: stri
       model,
       temperature: 0,
       max_tokens: 4096,
+      stream: false,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content },
@@ -67,13 +68,34 @@ async function requestTextFromAi(content: ChatMessageContent, systemPrompt: stri
   }
 
   const data = await response.json();
-  const text = data?.choices?.[0]?.message?.content ?? data?.content ?? data?.text;
+  const messageContent = data?.choices?.[0]?.message?.content;
+  const text =
+    textFromMessageContent(messageContent) ??
+    data?.choices?.[0]?.text ??
+    data?.output_text ??
+    textFromMessageContent(data?.content) ??
+    data?.text;
 
   if (typeof text !== 'string') {
     throw new Error('AI API returned an unsupported response format.');
   }
 
   return text;
+}
+
+function textFromMessageContent(content: any) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+
+  return content
+    .map(part => {
+      if (typeof part === 'string') return part;
+      if (typeof part?.text === 'string') return part.text;
+      if (typeof part?.content === 'string') return part.content;
+      return '';
+    })
+    .join('\n')
+    .trim();
 }
 
 async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: string) {
@@ -259,6 +281,31 @@ function parsePlainTextWords(text: string): ExtractedWord[] {
   return words;
 }
 
+function extractEnglishCandidates(text: string) {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = cleanWordLine(rawLine);
+    if (!line || line.length > 120) continue;
+
+    const separator = findWordSeparator(line);
+    const value = (separator ? line.slice(0, separator.index) : line)
+      .trim()
+      .replace(/^["'`]|["'`]$/g, '');
+
+    if (!hasEnglishLetters(value) || /[\u4e00-\u9fff]/.test(value)) continue;
+    if (!/^[A-Za-z][A-Za-z\s.'-]*$/.test(value)) continue;
+
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push(value);
+  }
+
+  return candidates;
+}
+
 function normalizeWordsFromAiText(rawText: string) {
   const result = tryParseJsonText(rawText);
   if (result !== null) {
@@ -337,18 +384,25 @@ export async function extractWordsFromText(inputText: string): Promise<Extracted
   const text = inputText.trim();
   if (!text) return [];
 
+  const wordsWithMeanings = parsePlainTextWords(text);
+  if (wordsWithMeanings.length > 0) return wordsWithMeanings;
+
+  const candidates = extractEnglishCandidates(text);
+  if (candidates.length === 0) {
+    throw new Error('No English vocabulary words were found in the pasted text.');
+  }
+
   const rawText = await requestTextFromAi(
-    JSON.stringify({
-      instruction:
-        'Extract every English vocabulary word or phrase from the pasted study text. ' +
-        'For each item, provide a concise Chinese meaning. If meanings already exist in the text, use them. ' +
-        'If the pasted text contains only English words, infer the Chinese meanings yourself. ' +
-        'Prefer strict JSON with this exact shape: {"words":[{"english":"abandon","chinese":"give up"}]}. ' +
-        'If you cannot return JSON, return one vocabulary item per line in the format "english - meaning". ' +
-        'The field names must be exactly "english" and "chinese". Do not return an empty list unless no English words are present.',
-      text,
-    }),
-    'You extract vocabulary from pasted study text and respond with strict JSON only.',
+    [
+      'Translate these English vocabulary items into concise Chinese meanings.',
+      'Return only one item per line in this exact format:',
+      'english - Chinese meaning',
+      'Do not add numbering, markdown, explanations, or extra text.',
+      '',
+      'Words:',
+      candidates.join('\n'),
+    ].join('\n'),
+    'You are a concise English-Chinese vocabulary dictionary.',
   );
 
   const words = normalizeWordsFromAiText(rawText);
