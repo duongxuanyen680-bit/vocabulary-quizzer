@@ -81,6 +81,14 @@ async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: stri
   return { rawText, result: parseJsonText(rawText) };
 }
 
+function tryParseJsonText(text: string) {
+  try {
+    return parseJsonText(text);
+  } catch {
+    return null;
+  }
+}
+
 function parseJsonText(text: string) {
   const trimmed = text.trim();
   const withoutFence = trimmed
@@ -183,6 +191,84 @@ function normalizeWords(result: any) {
     .filter((word: ExtractedWord) => word.english && word.chinese);
 }
 
+function cleanWordLine(line: string) {
+  return line
+    .replace(/^\s*[-*]\s*/, '')
+    .replace(/^\s*\d+[.)]\s*/, '')
+    .replace(/\*\*/g, '')
+    .trim();
+}
+
+function hasEnglishLetters(text: string) {
+  return /[A-Za-z]/.test(text);
+}
+
+function hasMeaningText(text: string) {
+  return /[\u4e00-\u9fffA-Za-z]/.test(text);
+}
+
+function findWordSeparator(line: string) {
+  const tokens = [' -- ', ' - ', ': ', ' = ', ' | ', '--', ' -', '- ', ':', '=', '|'];
+  let bestIndex = -1;
+  let bestLength = 0;
+
+  for (const token of tokens) {
+    const index = line.indexOf(token);
+    if (index > 0 && (bestIndex === -1 || index < bestIndex)) {
+      bestIndex = index;
+      bestLength = token.length;
+    }
+  }
+
+  for (let index = 1; index < line.length; index += 1) {
+    const code = line.charCodeAt(index);
+    const isWideSeparator = code === 0xff1a || code === 0xff1d || code === 0x2013 || code === 0x2014;
+    if (isWideSeparator && (bestIndex === -1 || index < bestIndex)) {
+      bestIndex = index;
+      bestLength = 1;
+    }
+  }
+
+  return bestIndex === -1 ? null : { index: bestIndex, length: bestLength };
+}
+
+function parsePlainTextWords(text: string): ExtractedWord[] {
+  const words: ExtractedWord[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = cleanWordLine(rawLine);
+    if (!line || line.length > 220) continue;
+
+    const separator = findWordSeparator(line);
+    if (!separator) continue;
+
+    const english = line.slice(0, separator.index).trim().replace(/^["'`]|["'`]$/g, '');
+    const chinese = line
+      .slice(separator.index + separator.length)
+      .trim()
+      .replace(/^["'`]|["'`]$/g, '');
+
+    const key = english.toLowerCase();
+    if (!hasEnglishLetters(english) || !hasMeaningText(chinese) || seen.has(key)) continue;
+
+    seen.add(key);
+    words.push({ english, chinese });
+  }
+
+  return words;
+}
+
+function normalizeWordsFromAiText(rawText: string) {
+  const result = tryParseJsonText(rawText);
+  if (result !== null) {
+    const words = normalizeWords(result);
+    if (words.length > 0) return words;
+  }
+
+  return parsePlainTextWords(rawText);
+}
+
 async function buildExtractionParts(files: File[], imageMode: ImageMode): Promise<Exclude<ChatMessageContent, string>> {
   const parts: Exclude<ChatMessageContent, string> = [
     {
@@ -251,20 +337,21 @@ export async function extractWordsFromText(inputText: string): Promise<Extracted
   const text = inputText.trim();
   if (!text) return [];
 
-  const { rawText, result } = await requestJsonFromAi(
+  const rawText = await requestTextFromAi(
     JSON.stringify({
       instruction:
         'Extract every English vocabulary word or phrase from the pasted study text. ' +
         'For each item, provide a concise Chinese meaning. If meanings already exist in the text, use them. ' +
         'If the pasted text contains only English words, infer the Chinese meanings yourself. ' +
-        'Return strict JSON only, with no markdown and no explanation. Use this exact shape: {"words":[{"english":"abandon","chinese":"give up"}]}. ' +
+        'Prefer strict JSON with this exact shape: {"words":[{"english":"abandon","chinese":"give up"}]}. ' +
+        'If you cannot return JSON, return one vocabulary item per line in the format "english - meaning". ' +
         'The field names must be exactly "english" and "chinese". Do not return an empty list unless no English words are present.',
       text,
     }),
     'You extract vocabulary from pasted study text and respond with strict JSON only.',
   );
 
-  const words = normalizeWords(result);
+  const words = normalizeWordsFromAiText(rawText);
   if (words.length > 0) return words;
 
   throw new Error(`AI returned no extractable words. Raw response: ${truncateForMessage(rawText)}`);
