@@ -247,6 +247,29 @@ export async function extractWordsFromDocuments(files: File[]): Promise<Extracte
   return [];
 }
 
+export async function extractWordsFromText(inputText: string): Promise<ExtractedWord[]> {
+  const text = inputText.trim();
+  if (!text) return [];
+
+  const { rawText, result } = await requestJsonFromAi(
+    JSON.stringify({
+      instruction:
+        'Extract every English vocabulary word or phrase from the pasted study text. ' +
+        'For each item, provide a concise Chinese meaning. If meanings already exist in the text, use them. ' +
+        'If the pasted text contains only English words, infer the Chinese meanings yourself. ' +
+        'Return strict JSON only, with no markdown and no explanation. Use this exact shape: {"words":[{"english":"abandon","chinese":"give up"}]}. ' +
+        'The field names must be exactly "english" and "chinese". Do not return an empty list unless no English words are present.',
+      text,
+    }),
+    'You extract vocabulary from pasted study text and respond with strict JSON only.',
+  );
+
+  const words = normalizeWords(result);
+  if (words.length > 0) return words;
+
+  throw new Error(`AI returned no extractable words. Raw response: ${truncateForMessage(rawText)}`);
+}
+
 export async function gradeAnswers(submissions: Submission[]): Promise<boolean[]> {
   if (submissions.length === 0) return [];
 
