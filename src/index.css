@@ -19,10 +19,59 @@
   --font-serif: "Lora", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
 }
 
+.dark {
+  --color-natural-50: #151611;
+  --color-natural-100: #1b1c16;
+  --color-natural-200: #24251f;
+  --color-natural-300: #303127;
+  --color-natural-400: #444638;
+  --color-natural-500: #5f6251;
+  --color-natural-600: #a3a691;
+  --color-natural-700: #bbbda8;
+  --color-natural-800: #d5d6c7;
+  --color-natural-900: #ececdf;
+  --color-natural-950: #faf9ef;
+  --color-natural-accent: #c8c6a4;
+}
+
 @layer utilities {
   .pb-safe {
     padding-bottom: env(safe-area-inset-bottom, 20px);
   }
 }
 
+@layer components {
+  .dark .bg-white {
+    background-color: var(--color-natural-200);
+  }
+
+  .dark .bg-rose-50 {
+    background-color: #2b171b;
+  }
+
+  .dark .border-rose-100,
+  .dark .border-rose-200 {
+    border-color: #6d2d38;
+  }
+
+  .dark .text-rose-900,
+  .dark .text-rose-700\/80,
+  .dark .text-rose-600 {
+    color: #f6b7c1;
+  }
+
+  .dark .bg-emerald-50 {
+    background-color: #102820;
+  }
+
+  .dark .border-emerald-100 {
+    border-color: #25624f;
+  }
+
+  .dark .text-emerald-700,
+  .dark .text-emerald-800,
+  .dark .text-emerald-500 {
+    color: #8ee0bf;
+  }
+}
 

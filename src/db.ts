@@ -18,6 +18,7 @@ export interface AppSettings {
   aiEndpoint?: string;
   aiApiKey?: string;
   aiModel?: string;
+  darkMode?: boolean;
 }
 
 const db = new Dexie('vocab_app_db') as Dexie & {

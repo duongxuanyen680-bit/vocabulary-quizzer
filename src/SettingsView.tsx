@@ -1,11 +1,18 @@
 import { useState, useEffect } from 'react';
 import { db } from './db';
+import { Moon, Sun } from 'lucide-react';
 
-export default function SettingsView() {
+type SettingsViewProps = {
+  darkMode: boolean;
+  onDarkModeChange: (enabled: boolean) => void;
+};
+
+export default function SettingsView({ darkMode, onDarkModeChange }: SettingsViewProps) {
   const [dailyLimit, setDailyLimit] = useState(20);
   const [aiEndpoint, setAiEndpoint] = useState('');
   const [aiApiKey, setAiApiKey] = useState('');
   const [aiModel, setAiModel] = useState('');
+  const [localDarkMode, setLocalDarkMode] = useState(darkMode);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -16,9 +23,19 @@ export default function SettingsView() {
       setAiEndpoint(settings.aiEndpoint || '');
       setAiApiKey(settings.aiApiKey || '');
       setAiModel(settings.aiModel || '');
+      setLocalDarkMode(Boolean(settings.darkMode));
     }
     load();
   }, []);
+
+  useEffect(() => {
+    setLocalDarkMode(darkMode);
+  }, [darkMode]);
+
+  const handleDarkModeToggle = (enabled: boolean) => {
+    setLocalDarkMode(enabled);
+    onDarkModeChange(enabled);
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -28,6 +45,7 @@ export default function SettingsView() {
       aiEndpoint: aiEndpoint.trim(),
       aiApiKey: aiApiKey.trim(),
       aiModel: aiModel.trim(),
+      darkMode: localDarkMode,
     });
     setIsSaving(false);
     alert('Settings saved!');
@@ -61,6 +79,32 @@ export default function SettingsView() {
               className="w-24 px-4 py-3 bg-natural-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-natural-400 text-natural-950"
             />
             <span className="text-[11px] uppercase tracking-widest text-natural-600 font-bold">words</span>
+          </div>
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-serif text-natural-950">Dark Mode</h2>
+              <p className="text-sm text-natural-600 mt-1">Use a softer dark theme for night study.</p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => handleDarkModeToggle(!localDarkMode)}
+              aria-pressed={localDarkMode}
+              className={`relative flex h-12 w-24 items-center rounded-full p-1 transition-colors ${
+                localDarkMode ? 'bg-natural-900' : 'bg-natural-300'
+              }`}
+            >
+              <span
+                className={`flex h-10 w-10 items-center justify-center rounded-full bg-white text-natural-900 shadow-sm transition-transform ${
+                  localDarkMode ? 'translate-x-12' : 'translate-x-0'
+                }`}
+              >
+                {localDarkMode ? <Moon size={18} /> : <Sun size={18} />}
+              </span>
+            </button>
           </div>
         </section>
 

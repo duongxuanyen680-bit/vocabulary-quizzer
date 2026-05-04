@@ -18,17 +18,24 @@ export default function App() {
   const [currentView, setCurrentView] = useState<View>('dashboard');
   const [quizConfig, setQuizConfig] = useState<QuizConfig>({ mode: 'daily' });
   const [isInitializing, setIsInitializing] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
     async function initSettings() {
       const settings = await db.settings.get('settings');
       if (!settings) {
-        await db.settings.put({ id: 'settings', dailyNewWordsLimit: 20 });
+        await db.settings.put({ id: 'settings', dailyNewWordsLimit: 20, darkMode: false });
+      } else {
+        setDarkMode(Boolean(settings.darkMode));
       }
       setIsInitializing(false);
     }
     initSettings();
   }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
 
   if (isInitializing) {
     return <div className="flex h-screen items-center justify-center">Loading...</div>;
@@ -45,7 +52,7 @@ export default function App() {
         {currentView === 'dashboard' && <Dashboard onStartQuiz={() => startQuiz({ mode: 'daily' })} />}
         {currentView === 'quiz' && <QuizView config={quizConfig} onFinish={() => setCurrentView('dashboard')} />}
         {currentView === 'vocab' && <VocabBook onStartSpecialQuiz={() => startQuiz({ mode: 'vocab_book' })} />}
-        {currentView === 'settings' && <SettingsView />}
+        {currentView === 'settings' && <SettingsView darkMode={darkMode} onDarkModeChange={setDarkMode} />}
       </main>
 
       {currentView !== 'quiz' && (
