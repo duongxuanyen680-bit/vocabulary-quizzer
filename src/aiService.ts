@@ -316,6 +316,86 @@ function normalizeWordsFromAiText(rawText: string) {
   return parsePlainTextWords(rawText);
 }
 
+function booleanFromValue(value: any): boolean | null {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+
+  if (typeof value !== 'string') return null;
+  return booleanFromText(value);
+}
+
+function booleanFromText(text: string): boolean | null {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (/\b(false|incorrect|wrong|no|reject|rejected)\b/.test(normalized)) return false;
+  if (/错误|不正确|不对|错/.test(normalized)) return false;
+
+  if (/\b(true|correct|right|yes|accept|accepted)\b/.test(normalized)) return true;
+  if (/正确|对/.test(normalized)) return true;
+
+  return null;
+}
+
+function booleanFromObject(item: any): boolean | null {
+  if (!item || typeof item !== 'object') return null;
+
+  for (const key of ['isCorrect', 'correct', 'result', 'grade', 'valid', 'accepted', 'answer']) {
+    const parsed = booleanFromValue(item[key]);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
+}
+
+function normalizeBooleanArray(result: any): Array<boolean | null> {
+  const source =
+    Array.isArray(result)
+      ? result
+      : result?.results ?? result?.grades ?? result?.answers ?? result?.data ?? result?.items;
+
+  if (!Array.isArray(source)) return [];
+
+  return source.map(item => {
+    const direct = booleanFromValue(item);
+    if (direct !== null) return direct;
+    return booleanFromObject(item);
+  });
+}
+
+function parsePlainTextBooleans(text: string, expectedLength: number): boolean[] {
+  const values: boolean[] = [];
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine
+      .replace(/^\s*[-*]\s*/, '')
+      .replace(/^\s*\d+[.)]\s*/, '')
+      .trim();
+    const parsed = booleanFromText(line);
+    if (parsed !== null) values.push(parsed);
+  }
+
+  if (values.length === 0 && expectedLength === 1) {
+    const parsed = booleanFromText(text);
+    if (parsed !== null) values.push(parsed);
+  }
+
+  return values;
+}
+
+function normalizeGradingResultsFromAiText(rawText: string, expectedLength: number): boolean[] {
+  const parsedJson = tryParseJsonText(rawText);
+  if (parsedJson !== null) {
+    const values = normalizeBooleanArray(parsedJson).filter((value): value is boolean => value !== null);
+    if (values.length > 0) return values.slice(0, expectedLength);
+  }
+
+  return parsePlainTextBooleans(rawText, expectedLength).slice(0, expectedLength);
+}
+
 async function buildExtractionParts(files: File[], imageMode: ImageMode): Promise<Exclude<ChatMessageContent, string>> {
   const parts: Exclude<ChatMessageContent, string> = [
     {
@@ -414,20 +494,30 @@ export async function extractWordsFromText(inputText: string): Promise<Extracted
 export async function gradeAnswers(submissions: Submission[]): Promise<boolean[]> {
   if (submissions.length === 0) return [];
 
-  const { result } = await requestJsonFromAi(
-    JSON.stringify({
-      instruction:
-        'Grade each Chinese answer for the matching English word. Accept synonyms and minor typos. Mark false when the meaning is fundamentally wrong or blank. Return only JSON.',
-      outputShape: { results: [true, false] },
-      submissions,
-    }),
-    'You are a strict but fair English teacher. Respond with strict JSON only.',
+  const rawText = await requestTextFromAi(
+    [
+      'Grade each Chinese answer for the matching English word.',
+      'Accept synonyms and minor typos.',
+      'Return exactly one result per line, in the same order as the questions.',
+      'Use only true or false. Do not add numbering, markdown, explanations, or extra text.',
+      '',
+      'Questions:',
+      ...submissions.map((submission, index) =>
+        [
+          `${index + 1}.`,
+          `English: ${submission.word}`,
+          `Correct Chinese meaning: ${submission.targetChinese}`,
+          `User answer: ${submission.userChinese || '(blank)'}`,
+        ].join('\n'),
+      ),
+    ].join('\n\n'),
+    'You are a strict but fair English teacher.',
   );
 
-  const results = Array.isArray(result) ? result : result?.results;
-  if (!Array.isArray(results)) {
-    throw new Error('AI API did not return a results array.');
+  const results = normalizeGradingResultsFromAiText(rawText, submissions.length);
+  if (results.length === 0) {
+    throw new Error(`AI returned no grading results. Raw response: ${truncateForMessage(rawText)}`);
   }
 
-  return submissions.map((_, index) => Boolean(results[index]));
+  return submissions.map((_, index) => results[index] ?? false);
 }
