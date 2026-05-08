@@ -68,23 +68,17 @@ async function requestTextFromAi(content: ChatMessageContent, systemPrompt: stri
   }
 
   const data = await response.json();
-  const messageContent = data?.choices?.[0]?.message?.content;
-  const text =
-    textFromMessageContent(messageContent) ??
-    data?.choices?.[0]?.text ??
-    data?.output_text ??
-    textFromMessageContent(data?.content) ??
-    data?.text;
-
-  if (typeof text !== 'string') {
-    throw new Error('AI API returned an unsupported response format.');
-  }
-
-  return text;
+  return extractResponseText(data);
 }
 
-function textFromMessageContent(content: any) {
+function textFromMessageContent(content: any): string | null {
   if (typeof content === 'string') return content;
+  if (!content) return null;
+
+  if (typeof content?.text === 'string') return content.text;
+  if (typeof content?.content === 'string') return content.content;
+  if (typeof content?.value === 'string') return content.value;
+  if (typeof content?.text?.value === 'string') return content.text.value;
   if (!Array.isArray(content)) return null;
 
   return content
@@ -92,10 +86,37 @@ function textFromMessageContent(content: any) {
       if (typeof part === 'string') return part;
       if (typeof part?.text === 'string') return part.text;
       if (typeof part?.content === 'string') return part.content;
+      if (typeof part?.value === 'string') return part.value;
+      if (typeof part?.text?.value === 'string') return part.text.value;
+      if (Array.isArray(part?.content)) return textFromMessageContent(part.content) || '';
       return '';
     })
     .join('\n')
     .trim();
+}
+
+function extractResponseText(data: any) {
+  const choice = data?.choices?.[0];
+  const candidates = [
+    choice?.message?.content,
+    choice?.message?.reasoning_content,
+    choice?.text,
+    data?.output_text,
+    data?.response,
+    data?.result,
+    data?.message,
+    data?.content,
+    data?.text,
+    data?.output,
+    data,
+  ];
+
+  for (const candidate of candidates) {
+    const text = textFromMessageContent(candidate);
+    if (typeof text === 'string' && text.trim()) return text;
+  }
+
+  return '';
 }
 
 async function requestJsonFromAi(content: ChatMessageContent, systemPrompt: string) {
@@ -330,12 +351,28 @@ function booleanFromValue(value: any): boolean | null {
 function booleanFromText(text: string): boolean | null {
   const normalized = text.trim().toLowerCase();
   if (!normalized) return null;
+  const compact = normalized.replace(/\s+/g, '');
 
-  if (/\b(false|incorrect|wrong|no|reject|rejected)\b/.test(normalized)) return false;
-  if (/错误|不正确|不对|错/.test(normalized)) return false;
+  if (/\b(false|incorrect|wrong|no|reject|rejected|0|f)\b/.test(normalized)) return false;
+  if (/[\u2717\u274c]/.test(normalized)) return false;
+  if (
+    compact.includes('\u9519') ||
+    compact.includes('\u9519\u8bef') ||
+    compact.includes('\u4e0d\u6b63\u786e') ||
+    compact.includes('\u4e0d\u5bf9')
+  ) {
+    return false;
+  }
 
-  if (/\b(true|correct|right|yes|accept|accepted)\b/.test(normalized)) return true;
-  if (/正确|对/.test(normalized)) return true;
+  if (/\b(true|correct|right|yes|accept|accepted|1|t)\b/.test(normalized)) return true;
+  if (/[\u2713\u2714\u2705]/.test(normalized)) return true;
+  if (
+    compact.includes('\u6b63\u786e') ||
+    compact.includes('\u7b54\u5bf9') ||
+    compact === '\u5bf9'
+  ) {
+    return true;
+  }
 
   return null;
 }
@@ -378,6 +415,18 @@ function parsePlainTextBooleans(text: string, expectedLength: number): boolean[]
     if (parsed !== null) values.push(parsed);
   }
 
+  if (values.length === 0) {
+    const tokens =
+      text.match(
+        /\b(?:true|false|correct|incorrect|wrong|right|yes|no|1|0|t|f)\b|[\u2713\u2714\u2705\u2717\u274c]|\u4e0d\u6b63\u786e|\u4e0d\u5bf9|\u9519\u8bef|\u6b63\u786e|\u7b54\u5bf9|\u5bf9|\u9519/gi,
+      ) || [];
+
+    for (const token of tokens) {
+      const parsed = booleanFromText(token);
+      if (parsed !== null) values.push(parsed);
+    }
+  }
+
   if (values.length === 0 && expectedLength === 1) {
     const parsed = booleanFromText(text);
     if (parsed !== null) values.push(parsed);
@@ -394,6 +443,104 @@ function normalizeGradingResultsFromAiText(rawText: string, expectedLength: numb
   }
 
   return parsePlainTextBooleans(rawText, expectedLength).slice(0, expectedLength);
+}
+
+function isIgnoredMeaningPunctuation(char: string) {
+  if (/[\s;,.:'"`!?()[\]{}<>/\\|-]/.test(char)) return true;
+
+  const code = char.charCodeAt(0);
+  return [
+    0x3001,
+    0x3002,
+    0xff0c,
+    0xff0e,
+    0xff1a,
+    0xff1b,
+    0xff01,
+    0xff1f,
+    0xff08,
+    0xff09,
+    0x300a,
+    0x300b,
+  ].includes(code);
+}
+
+function normalizeForLocalGrade(text: string) {
+  return Array.from(text.toLowerCase())
+    .filter(char => !isIgnoredMeaningPunctuation(char))
+    .join('')
+    .trim();
+}
+
+function splitMeaningParts(text: string) {
+  const parts: string[] = [];
+  let current = '';
+
+  for (const char of text) {
+    if (isIgnoredMeaningPunctuation(char)) {
+      if (current.trim()) parts.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  if (current.trim()) parts.push(current);
+
+  return parts.map(normalizeForLocalGrade).filter(part => part.length >= 2);
+}
+
+function localGradeSubmission(submission: Submission) {
+  const user = normalizeForLocalGrade(submission.userChinese);
+  const target = normalizeForLocalGrade(submission.targetChinese);
+  if (!user || !target) return false;
+
+  if (user === target) return true;
+  if (user.length >= 2 && target.includes(user)) return true;
+  if (target.length >= 2 && user.includes(target)) return true;
+
+  return splitMeaningParts(submission.targetChinese).some(part => user.includes(part) || part.includes(user));
+}
+
+function localGradeAnswers(submissions: Submission[]) {
+  return submissions.map(localGradeSubmission);
+}
+
+function mergeWithLocalFallback(aiResults: boolean[], submissions: Submission[]) {
+  const localResults = localGradeAnswers(submissions);
+  return submissions.map((_, index) => aiResults[index] ?? localResults[index] ?? false);
+}
+
+function buildLineGradingPrompt(submissions: Submission[]) {
+  return [
+    'Grade each Chinese answer for the matching English word.',
+    'Accept synonyms and minor typos.',
+    'Return exactly one result per line, in the same order as the questions.',
+    'Use only true or false. Do not add numbering, markdown, explanations, or extra text.',
+    '',
+    'Questions:',
+    ...submissions.map((submission, index) =>
+      [
+        `${index + 1}.`,
+        `English: ${submission.word}`,
+        `Correct Chinese meaning: ${submission.targetChinese}`,
+        `User answer: ${submission.userChinese || '(blank)'}`,
+      ].join('\n'),
+    ),
+  ].join('\n\n');
+}
+
+function buildJsonGradingPrompt(submissions: Submission[]) {
+  return JSON.stringify({
+    instruction:
+      'Grade each Chinese answer for the matching English word. Accept synonyms and minor typos. Return JSON only with this exact shape: {"results":[true,false]}.',
+    submissions,
+  });
+}
+
+async function requestGradingResults(prompt: string, systemPrompt: string, expectedLength: number) {
+  const rawText = await requestTextFromAi(prompt, systemPrompt);
+  return normalizeGradingResultsFromAiText(rawText, expectedLength);
 }
 
 async function buildExtractionParts(files: File[], imageMode: ImageMode): Promise<Exclude<ChatMessageContent, string>> {
@@ -494,30 +641,31 @@ export async function extractWordsFromText(inputText: string): Promise<Extracted
 export async function gradeAnswers(submissions: Submission[]): Promise<boolean[]> {
   if (submissions.length === 0) return [];
 
-  const rawText = await requestTextFromAi(
-    [
-      'Grade each Chinese answer for the matching English word.',
-      'Accept synonyms and minor typos.',
-      'Return exactly one result per line, in the same order as the questions.',
-      'Use only true or false. Do not add numbering, markdown, explanations, or extra text.',
-      '',
-      'Questions:',
-      ...submissions.map((submission, index) =>
-        [
-          `${index + 1}.`,
-          `English: ${submission.word}`,
-          `Correct Chinese meaning: ${submission.targetChinese}`,
-          `User answer: ${submission.userChinese || '(blank)'}`,
-        ].join('\n'),
-      ),
-    ].join('\n\n'),
-    'You are a strict but fair English teacher.',
-  );
+  try {
+    const lineResults = await requestGradingResults(
+      buildLineGradingPrompt(submissions),
+      'You are a strict but fair English teacher.',
+      submissions.length,
+    );
 
-  const results = normalizeGradingResultsFromAiText(rawText, submissions.length);
-  if (results.length === 0) {
-    throw new Error(`AI returned no grading results. Raw response: ${truncateForMessage(rawText)}`);
+    if (lineResults.length === submissions.length) return lineResults;
+    if (lineResults.length > 0) return mergeWithLocalFallback(lineResults, submissions);
+  } catch (error) {
+    console.warn('Primary AI grading failed. Trying fallback grading prompt.', error);
   }
 
-  return submissions.map((_, index) => results[index] ?? false);
+  try {
+    const jsonResults = await requestGradingResults(
+      buildJsonGradingPrompt(submissions),
+      'You are a strict but fair English teacher. Respond with JSON only.',
+      submissions.length,
+    );
+
+    if (jsonResults.length === submissions.length) return jsonResults;
+    if (jsonResults.length > 0) return mergeWithLocalFallback(jsonResults, submissions);
+  } catch (error) {
+    console.warn('Fallback AI grading failed. Using local grading fallback.', error);
+  }
+
+  return localGradeAnswers(submissions);
 }
