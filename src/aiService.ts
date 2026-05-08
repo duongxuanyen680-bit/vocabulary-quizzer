@@ -472,6 +472,16 @@ function normalizeForLocalGrade(text: string) {
     .trim();
 }
 
+function trimCommonChineseSuffix(text: string) {
+  return text.replace(/[\u7684\u5730\u5f97]+$/g, '');
+}
+
+function normalizeMeaningVariants(text: string) {
+  const normalized = normalizeForLocalGrade(text);
+  const trimmedSuffix = trimCommonChineseSuffix(normalized);
+  return Array.from(new Set([normalized, trimmedSuffix].filter(Boolean)));
+}
+
 function splitMeaningParts(text: string) {
   const parts: string[] = [];
   let current = '';
@@ -490,25 +500,43 @@ function splitMeaningParts(text: string) {
   return parts.map(normalizeForLocalGrade).filter(part => part.length >= 2);
 }
 
+function meaningMatches(userText: string, targetText: string) {
+  const userVariants = normalizeMeaningVariants(userText);
+  const targetVariants = normalizeMeaningVariants(targetText);
+
+  for (const user of userVariants) {
+    for (const target of targetVariants) {
+      if (!user || !target) continue;
+      if (user === target) return true;
+      if (user.length >= 2 && target.includes(user)) return true;
+      if (target.length >= 2 && user.includes(target)) return true;
+    }
+  }
+
+  return false;
+}
+
 function localGradeSubmission(submission: Submission) {
   const user = normalizeForLocalGrade(submission.userChinese);
   const target = normalizeForLocalGrade(submission.targetChinese);
   if (!user || !target) return false;
 
-  if (user === target) return true;
-  if (user.length >= 2 && target.includes(user)) return true;
-  if (target.length >= 2 && user.includes(target)) return true;
+  if (meaningMatches(submission.userChinese, submission.targetChinese)) return true;
 
-  return splitMeaningParts(submission.targetChinese).some(part => user.includes(part) || part.includes(user));
+  const userParts = splitMeaningParts(submission.userChinese);
+  const targetParts = splitMeaningParts(submission.targetChinese);
+  return userParts.some(userPart =>
+    targetParts.some(targetPart => meaningMatches(userPart, targetPart)),
+  );
 }
 
 function localGradeAnswers(submissions: Submission[]) {
   return submissions.map(localGradeSubmission);
 }
 
-function mergeWithLocalFallback(aiResults: boolean[], submissions: Submission[]) {
+function mergeWithLocalOverride(aiResults: boolean[], submissions: Submission[]) {
   const localResults = localGradeAnswers(submissions);
-  return submissions.map((_, index) => aiResults[index] ?? localResults[index] ?? false);
+  return submissions.map((_, index) => Boolean(localResults[index] || aiResults[index]));
 }
 
 function buildLineGradingPrompt(submissions: Submission[]) {
@@ -648,8 +676,7 @@ export async function gradeAnswers(submissions: Submission[]): Promise<boolean[]
       submissions.length,
     );
 
-    if (lineResults.length === submissions.length) return lineResults;
-    if (lineResults.length > 0) return mergeWithLocalFallback(lineResults, submissions);
+    if (lineResults.length > 0) return mergeWithLocalOverride(lineResults, submissions);
   } catch (error) {
     console.warn('Primary AI grading failed. Trying fallback grading prompt.', error);
   }
@@ -661,8 +688,7 @@ export async function gradeAnswers(submissions: Submission[]): Promise<boolean[]
       submissions.length,
     );
 
-    if (jsonResults.length === submissions.length) return jsonResults;
-    if (jsonResults.length > 0) return mergeWithLocalFallback(jsonResults, submissions);
+    if (jsonResults.length > 0) return mergeWithLocalOverride(jsonResults, submissions);
   } catch (error) {
     console.warn('Fallback AI grading failed. Using local grading fallback.', error);
   }
